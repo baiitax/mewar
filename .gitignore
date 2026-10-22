@@ -1,0 +1,20 @@
+node_modules/
+.next/
+/app/generated/prisma
+coverage/
+dist/
+out/
+build/
+*.tsbuildinfo
+*.log
+.DS_Store
+
+# Local secrets/config (never commit)
+.env*
+!.env.example
+
+# Local database and SQLite sidecars
+prisma/*.db
+prisma/*.db-*
+*.db
+*.db-*

@@ -1,0 +1,3 @@
+export default function Page(){
+ return <section className="py-8"><div className="container max-w-[640px]"><div className="kicker">Portals • Confidential</div><h1 className="text-2xl font-bold">eLMS (LMS) — Restricted Access</h1><div className="bg-slate-50 border border-line rounded-xl p-4 mt-4"><div className="text-sm font-bold">🔒 SSO restricted</div><p className="text-xs text-slate-600 mt-1">Moodle-based eLMS — course shells, assignments, quizzes, grades (launched from Student Portal via LTI SSO). Contact Registry / IT for entitlement.</p></div><a href="/contact" className="inline-block mt-4 bg-navy text-white px-4 py-2 rounded-full text-sm font-bold">Contact Registry →</a></div></section>;
+}

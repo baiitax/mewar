@@ -1,0 +1,463 @@
+// MIU Platform Foundation — Prisma schema
+// SQLite for workspace preview; swap provider to postgresql and DATABASE_URL to postgres:// for prod (Galaxy Backbone / AWS Lagos)
+// Covers REQ-INT-002 (single IdP), REQ-ADM-001 (RBAC/MFA), REQ-FIN-005 (Bursary-signed fee source), REQ-WEB-007/008
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ── Identity & Access (REQ-INT-002, REQ-ADM-001, REQ-SEC-003) ──
+model User {
+  id                String             @id @default(cuid())
+  email             String             @unique
+  emailVerified     DateTime?
+  phone             String?            @unique
+  phoneVerified     Boolean            @default(false)
+  passwordHash      String? // for credentials; OIDC users have null
+  name              String?
+  image             String?
+  // RBAC
+  role              String             @default("APPLICANT")
+  isActive          Boolean            @default(true)
+  // MFA (TOTP stub)
+  mfaEnabled        Boolean            @default(false)
+  mfaSecret         String?
+  // Audit
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  lastLoginAt       DateTime?
+  // Relations
+  accounts          Account[]
+  sessions          Session[]
+  auditLogs         AuditLog[]
+  applicant         Applicant?
+  staffProfile      StaffProfile?
+  applicationEvents ApplicationEvent[]
+  studentRecord     StudentRecord?
+  governanceEdits   GovernanceEntry[]  @relation("GovernanceEntryEditor")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// Role enum replaced with String for SQLite compat
+
+model StaffProfile {
+  id          String  @id @default(cuid())
+  userId      String  @unique
+  user        User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  staffNo     String  @unique
+  department  String?
+  designation String?
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  action    String // e.g. auth.login, fee.publish, applicant.create
+  entity    String? // table/entity name
+  entityId  String?
+  before    String? // JSON
+  after     String? // JSON
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
+}
+
+// Hashed email+IP key; basic persistent credential lockout (REQ-SEC-003).
+// CAPTCHA/anomaly detection and distributed rate limiting remain deployment gates.
+model AuthThrottle {
+  key             String    @id
+  failures        Int       @default(0)
+  windowStartedAt DateTime  @default(now())
+  lockedUntil     DateTime?
+  updatedAt       DateTime  @updatedAt
+}
+
+// Short-lived OTP metadata only; raw email/phone and plaintext codes are never stored here.
+model OtpChallenge {
+  key                 String    @id // HMAC(purpose + channel + normalized identifier)
+  channel             String // email | phone
+  purpose             String // registration
+  codeHash            String
+  attempts            Int       @default(0)
+  sendCount           Int       @default(1)
+  sendWindowStartedAt DateTime  @default(now())
+  expiresAt           DateTime
+  lockedUntil         DateTime?
+  verifiedAt          DateTime?
+  consumedAt          DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@index([expiresAt])
+}
+
+// ── Academic catalogue (REQ-ACD-001) ──
+model Programme {
+  id                      String              @id @default(cuid())
+  slug                    String              @unique
+  title                   String
+  school                  String // Computing | Sciences | Management | Law
+  durationYears           Int                 @default(4)
+  degree                  String              @default("BSc")
+  nucRef                  String? // NUC accreditation letter ref
+  nucValidUntil           DateTime?
+  isActive                Boolean             @default(true)
+  isAcceptingApplications Boolean             @default(false) // Registry must explicitly open an approved intake
+  createdAt               DateTime            @default(now())
+  updatedAt               DateTime            @updatedAt
+  courses                 Course[]
+  feeSchedules            FeeSchedule[]
+  applications            Application[]
+  curricula               CurriculumVersion[]
+  studentEnrollments      StudentEnrollment[]
+}
+
+model Course {
+  id                String             @id @default(cuid())
+  code              String             @unique // e.g. SEP 333
+  title             String
+  credits           Int
+  theoryHours       Int?
+  practicalHours    Int?
+  programmeId       String
+  programme         Programme          @relation(fields: [programmeId], references: [id])
+  effectiveSession  String // e.g. 2026/27
+  senateRef         String? // Senate approval ref
+  curriculumCourses CurriculumCourse[]
+}
+
+// ── Bursary fee single source (REQ-FIN-005, REQ-FIN-002) ──
+model FeeSchedule {
+  id                 String          @id @default(cuid())
+  programmeId        String
+  programme          Programme       @relation(fields: [programmeId], references: [id])
+  session            String // e.g. 2026/27
+  tuition            Int // whole NGN naira; never kobo
+  hostel             Int             @default(0)
+  feeding            Int             @default(0)
+  total              Int // derived
+  currency           String          @default("NGN")
+  isPublished        Boolean         @default(false)
+  publishedAt        DateTime?
+  publishedById      String?
+  bursarSignature    String? // name of signatory
+  bursarSignedAt     DateTime?
+  approvalStatus     String          @default("DRAFT") // DRAFT | APPROVED | SUPERSEDED
+  createdById        String?
+  version            Int             @default(1)
+  effectiveFrom      DateTime
+  effectiveUntil     DateTime?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  financeAssessments FeeAssessment[]
+
+  @@unique([programmeId, session, version])
+}
+
+// ── Applicant master (REQ-APP-001 dedup, REQ-INT-003 MDM) ──
+model Applicant {
+  id                 String        @id @default(cuid())
+  userId             String        @unique
+  user               User          @relation(fields: [userId], references: [id])
+  // JAMB identifiers are encrypted at rest and separately HMAC-keyed for deduplication.
+  jambRegNoEncrypted String?
+  jambRegNoHash      String?       @unique
+  jambRegNoLast4     String?
+  dateOfBirth        DateTime?
+  gender             String?
+  stateOfOrigin      String?
+  nationality        String        @default("Nigeria")
+  // Email/phone dedup uses unique User indexes; JAMB dedup uses the keyed hash above.
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+  applications       Application[]
+}
+
+model Application {
+  id             String             @id @default(cuid())
+  applicantId    String
+  applicant      Applicant          @relation(fields: [applicantId], references: [id])
+  programmeId    String
+  programme      Programme          @relation(fields: [programmeId], references: [id])
+  session        String
+  appNo          String             @unique // MIU-APP-YYYY-SEQ-CHECK
+  status         String             @default("DRAFT")
+  entryMode      String             @default("UTME") // UTME | DIRECT_ENTRY | INTERNATIONAL
+  jambScore      Int?
+  jambCapsStatus String             @default("NOT_SYNCED") // manual reconciliation only until JAMB integration is approved
+  olevel         String? // JSON payload of applicant-entered subjects/grades
+  documents      String? // JSON checklist flags; no files stored by preview
+  counsellorId   String?
+  submittedAt    DateTime?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  events         ApplicationEvent[]
+  studentRecord  StudentRecord?
+
+  @@unique([applicantId, programmeId, session])
+  @@index([applicantId, updatedAt])
+  @@index([status, updatedAt])
+}
+
+model ApplicationSequence {
+  year       Int      @id
+  nextNumber Int      @default(0)
+  updatedAt  DateTime @updatedAt
+}
+
+model ApplicationEvent {
+  id               String      @id @default(cuid())
+  applicationId    String
+  application      Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  fromStatus       String?
+  toStatus         String
+  changedById      String?
+  changedBy        User?       @relation(fields: [changedById], references: [id], onDelete: SetNull)
+  note             String? // Staff-only audit note
+  applicantMessage String? // Applicant-visible status message; never place confidential internal notes here
+  createdAt        DateTime    @default(now())
+
+  @@index([applicationId, createdAt])
+}
+
+// Preview-only student identity. Official matriculation, SIS and LMS provisioning are not implemented.
+model StudentRecord {
+  id                  String              @id @default(cuid())
+  userId              String              @unique
+  user                User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceApplicationId String              @unique
+  sourceApplication   Application         @relation(fields: [sourceApplicationId], references: [id], onDelete: Cascade)
+  previewStudentId    String              @unique
+  officialMatricNo    String?             @unique
+  status              String              @default("PREVIEW_PROVISIONED")
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+  enrollments         StudentEnrollment[]
+}
+
+model StudentSequence {
+  year       Int      @id
+  nextNumber Int      @default(0)
+  updatedAt  DateTime @updatedAt
+}
+
+// A session record is explicitly preview-only until Registry provides an approved source and dates.
+model AcademicSession {
+  code              String              @id // e.g. 2026/27
+  name              String?
+  status            String              @default("UNCONFIGURED")
+  isPreview         Boolean             @default(true)
+  officialSourceRef String?
+  approvedAt        DateTime?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  curricula         CurriculumVersion[]
+  enrollments       StudentEnrollment[]
+}
+
+model CurriculumVersion {
+  id                  String              @id @default(cuid())
+  programmeId         String
+  programme           Programme           @relation(fields: [programmeId], references: [id])
+  academicSessionCode String
+  academicSession     AcademicSession     @relation(fields: [academicSessionCode], references: [code])
+  version             Int                 @default(1)
+  status              String              @default("UNCONFIGURED")
+  isPreview           Boolean             @default(true)
+  officialSourceRef   String?
+  approvedAt          DateTime?
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+  courses             CurriculumCourse[]
+  enrollments         StudentEnrollment[]
+
+  @@unique([programmeId, academicSessionCode, version])
+}
+
+model CurriculumCourse {
+  id                  String            @id @default(cuid())
+  curriculumVersionId String
+  curriculumVersion   CurriculumVersion @relation(fields: [curriculumVersionId], references: [id], onDelete: Cascade)
+  courseId            String
+  course              Course            @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  level               Int?
+  semester            Int?
+  isRequired          Boolean           @default(true)
+  createdAt           DateTime          @default(now())
+
+  @@unique([curriculumVersionId, courseId])
+}
+
+model StudentEnrollment {
+  id                  String             @id @default(cuid())
+  studentRecordId     String
+  studentRecord       StudentRecord      @relation(fields: [studentRecordId], references: [id], onDelete: Cascade)
+  programmeId         String
+  programme           Programme          @relation(fields: [programmeId], references: [id])
+  academicSessionCode String
+  academicSession     AcademicSession    @relation(fields: [academicSessionCode], references: [code])
+  curriculumVersionId String?
+  curriculumVersion   CurriculumVersion? @relation(fields: [curriculumVersionId], references: [id])
+  status              String             @default("PREVIEW_PENDING")
+  curriculumStatus    String             @default("UNCONFIGURED")
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  feeAssessments      FeeAssessment[]
+
+  @@unique([studentRecordId, academicSessionCode])
+  @@index([programmeId, academicSessionCode])
+}
+
+// Development-only billing assessment. Amounts are copied from a currently signed fee schedule.
+model FeeAssessment {
+  id            String               @id @default(cuid())
+  enrollmentId  String               @unique
+  enrollment    StudentEnrollment    @relation(fields: [enrollmentId], references: [id])
+  feeScheduleId String
+  feeSchedule   FeeSchedule          @relation(fields: [feeScheduleId], references: [id])
+  amount        Int // whole NGN naira copied from the signed schedule total
+  currency      String               @default("NGN")
+  isPreview     Boolean              @default(true)
+  createdAt     DateTime             @default(now())
+  ledgerEntries FinanceLedgerEntry[]
+  payment       FinancePayment?
+
+  @@index([createdAt])
+}
+
+// Synthetic provider capture only. It is not evidence that money moved.
+model FinancePayment {
+  id                String              @id @default(cuid())
+  feeAssessmentId   String              @unique
+  feeAssessment     FeeAssessment       @relation(fields: [feeAssessmentId], references: [id])
+  providerName      String              @default("PREVIEW_SIMULATOR")
+  providerReference String              @unique
+  idempotencyKey    String              @unique
+  amount            Int
+  currency          String              @default("NGN")
+  status            String              @default("PREVIEW_CAPTURED")
+  receiptCode       String              @unique
+  receiptToken      String              @unique
+  settlementBatchId String?
+  settlementBatch   SettlementBatch?    @relation(fields: [settlementBatchId], references: [id])
+  ledgerEntry       FinanceLedgerEntry?
+  createdAt         DateTime            @default(now())
+
+  @@index([createdAt])
+  @@index([settlementBatchId])
+}
+
+// Append-only preview ledger. A fee charge is a debit; a captured test payment is a credit.
+model FinanceLedgerEntry {
+  id              String          @id @default(cuid())
+  feeAssessmentId String
+  feeAssessment   FeeAssessment   @relation(fields: [feeAssessmentId], references: [id])
+  paymentId       String?         @unique
+  payment         FinancePayment? @relation(fields: [paymentId], references: [id])
+  entryType       String // FEE_CHARGE | PREVIEW_PAYMENT
+  direction       String // DEBIT | CREDIT
+  amount          Int
+  currency        String          @default("NGN")
+  idempotencyKey  String          @unique
+  createdAt       DateTime        @default(now())
+
+  @@index([feeAssessmentId, createdAt])
+}
+
+// Synthetic settlement import/reconciliation. Nothing connects to a bank or payment provider.
+model SettlementBatch {
+  id                     String           @id @default(cuid())
+  providerName           String           @default("PREVIEW_SIMULATOR")
+  providerBatchReference String           @unique
+  requestHash            String
+  reportedAmount         Int
+  matchedAmount          Int
+  currency               String           @default("NGN")
+  status                 String // MATCHED | VARIANCE
+  createdById            String?
+  createdAt              DateTime         @default(now())
+  payments               FinancePayment[]
+
+  @@index([createdAt])
+  @@index([status, createdAt])
+}
+
+model PreviewReceiptSequence {
+  year       Int      @id
+  nextNumber Int      @default(0)
+  updatedAt  DateTime @updatedAt
+}
+
+// Development-only tracking aid. It does not represent verified institutional approval.
+model GovernanceEntry {
+  id                    String   @id @default(cuid())
+  code                  String   @unique
+  accountableOwnerLabel String?
+  ownerOffice           String?
+  ownerRole             String?
+  status                String   @default("OPEN") // OPEN | OWNER_ASSIGNED | IN_PROGRESS | READY_FOR_REVIEW | BLOCKED
+  decisionSummary       String?
+  evidenceReference     String?
+  updatedById           String?
+  updatedBy             User?    @relation("GovernanceEntryEditor", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([status, updatedAt])
+}
+
+// ApplicationStatus enum replaced with String for SQLite compat
+
+// ── CMS ownership (REQ-WEB-007) ──
+model CmsPage {
+  id             String    @id @default(cuid())
+  slug           String    @unique
+  title          String
+  owner          String? // dept
+  approver       String?
+  effectiveFrom  DateTime?
+  effectiveUntil DateTime?
+  lastReviewedAt DateTime?
+  isPublished    Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}

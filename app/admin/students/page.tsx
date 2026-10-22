@@ -1,0 +1,37 @@
+import { auth } from "@/auth";
+import { prisma } from "@/app/lib/db";
+import Link from "next/link";
+import { redirect } from "next/navigation";
+
+const ACCESS = new Set(["SUPER_ADMIN", "REGISTRAR", "ADMISSIONS"]);
+
+export default async function StudentRecordsPage() {
+  const session = await auth();
+  if (!session?.user) redirect("/login");
+  const role = (session.user as any).role;
+  if (!ACCESS.has(role)) redirect("/login?error=role");
+  const [records, sessions] = await Promise.all([
+    prisma.studentRecord.findMany({
+      include: {
+        user: { select: { name: true, email: true } },
+        sourceApplication: { select: { appNo: true, session: true, programme: { select: { title: true, school: true } } } },
+        enrollments: { include: { academicSession: true, curriculumVersion: { include: { _count: { select: { courses: true } } } } } },
+      },
+      orderBy: { createdAt: "desc" }, take: 100,
+    }),
+    prisma.academicSession.findMany({ include: { curricula: { include: { programme: { select: { title: true } }, _count: { select: { courses: true, enrollments: true } } } }, _count: { select: { enrollments: true } } }, orderBy: { code: "desc" }, take: 20 }),
+  ]);
+
+  return <section className="py-8 md:py-10"><div className="container max-w-6xl">
+    <Link href="/admin" className="text-sm font-bold text-navy underline">← Admin dashboard</Link>
+    <div className="mt-4 flex flex-wrap items-end justify-between gap-3"><div><div className="kicker">Registry · Restricted staff workspace</div><h1 className="mt-1 text-3xl font-extrabold">Student records preview</h1><p className="mt-2 text-sm text-slate-600">Signed in as {String((session.user as any).email)} · {role}</p></div><span className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-600">{records.length} preview record{records.length===1?"":"s"}</span></div>
+    <div className="mt-5 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950"><b>Development-only records — not matriculation.</b><p className="mt-1 text-xs leading-5">The workflow creates a clearly labelled test student ID only after an applicant accepts a staff-marked preview offer. It does not assign an official matric number, change the applicant's identity role, open the Student Portal, create course registrations, contact a real SIS or provision the LMS.</p></div>
+    <div className="mt-6 grid gap-3 sm:grid-cols-3"><div className="rounded-2xl border border-slate-200 bg-white p-4"><div className="text-xs text-slate-500">Preview student records</div><div className="mt-1 text-2xl font-extrabold text-navy">{records.length}</div><div className="text-xs text-slate-500">Latest 100 shown below</div></div><div className="rounded-2xl border border-slate-200 bg-white p-4"><div className="text-xs text-slate-500">Official matric numbers</div><div className="mt-1 text-2xl font-extrabold text-navy">0</div><div className="text-xs text-slate-500">Not configured or issued</div></div><div className="rounded-2xl border border-slate-200 bg-white p-4"><div className="text-xs text-slate-500">External student systems</div><div className="mt-1 text-lg font-extrabold text-navy">Not connected</div><div className="text-xs text-slate-500">No SIS, SSO or LMS provisioning</div></div></div>
+
+    <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 md:p-6"><div className="kicker">Registry data</div><h2 className="mt-1 text-xl font-bold">Preview student identity and enrollment</h2>
+      {!records.length ? <div className="mt-4 rounded-xl border border-dashed border-slate-300 p-7 text-center text-sm text-slate-500">No preview student records yet. In the synthetic workflow, a student preview record is created only after a test offer is accepted.</div> : <div className="mt-4 space-y-4">{records.map(record=><article key={record.id} className="rounded-2xl border border-slate-200 p-4 md:p-5"><div className="flex flex-wrap items-start justify-between gap-2"><div><h3 className="font-bold text-navy">{record.user.name || "Applicant"}</h3><p className="mt-1 text-xs text-slate-500">{record.user.email} · Source application {record.sourceApplication.appNo}</p></div><span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-900">{record.status.replaceAll("_"," ")}</span></div><div className="mt-4 grid gap-3 sm:grid-cols-3"><div className="rounded-xl bg-slate-50 p-3"><div className="text-xs text-slate-500">Preview student ID</div><div className="mt-1 font-mono text-sm font-bold text-navy">{record.previewStudentId}</div></div><div className="rounded-xl bg-slate-50 p-3"><div className="text-xs text-slate-500">Official matric number</div><div className="mt-1 text-sm font-bold text-slate-600">{record.officialMatricNo || "Not assigned"}</div></div><div className="rounded-xl bg-slate-50 p-3"><div className="text-xs text-slate-500">Programme</div><div className="mt-1 text-sm font-bold text-navy">{record.sourceApplication.programme.title}</div></div></div><div className="mt-4 space-y-2">{record.enrollments.map(enrollment=><div key={enrollment.id} className="rounded-xl border border-slate-200 p-3"><div className="flex flex-wrap justify-between gap-2"><b className="text-sm text-navy">Session {enrollment.academicSession.code} · {enrollment.academicSession.isPreview?"preview only":"official"}</b><span className="text-xs text-slate-500">{enrollment.status.replaceAll("_"," ")}</span></div><div className="mt-1 text-xs text-slate-600">Session status: {enrollment.academicSession.status} · Curriculum: {enrollment.curriculumStatus} · Course registrations: none</div>{enrollment.curriculumVersion&&<div className="mt-1 text-xs text-slate-500">Curriculum version {enrollment.curriculumVersion.version} · {enrollment.curriculumVersion._count.courses} course records · official source: {enrollment.curriculumVersion.officialSourceRef||"not supplied"}</div>}</div>)}</div></article>)}</div>}
+    </section>
+
+    <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 md:p-6"><div className="kicker">Academic configuration</div><h2 className="mt-1 text-xl font-bold">Sessions and curriculum readiness</h2><p className="mt-2 text-sm text-slate-600">Academic sessions and curriculum versions are recorded separately from student identities so Registry can load approved sources later. No official session dates, Senate-approved course lists or course registrations are included in this preview.</p>{sessions.length?<div className="mt-4 space-y-3">{sessions.map(academicSession=><article key={academicSession.code} className="rounded-xl border border-slate-200 p-4"><div className="flex flex-wrap justify-between gap-2"><b className="text-navy">{academicSession.code} · {academicSession.status}</b><span className="text-xs text-slate-500">{academicSession.isPreview?"Preview session":"Official session"} · {academicSession._count.enrollments} enrollment record(s)</span></div><div className="mt-2 space-y-1 text-xs text-slate-600">{academicSession.curricula.map(curriculum=><p key={curriculum.id}>{curriculum.programme.title} · v{curriculum.version} · {curriculum.status} · {curriculum._count.courses} course(s) · source: {curriculum.officialSourceRef||"not supplied"}</p>)}</div></article>)}</div>:<div className="mt-4 rounded-xl bg-slate-50 p-4 text-sm text-slate-500">No session or curriculum data has been loaded. Registry must provide approved source documents before these records can be considered official.</div>}</section>
+  </div></section>;
+}

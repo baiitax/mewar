@@ -1,0 +1,7 @@
+export default function Page(){return <section className="py-8"><div className="container"><div className="kicker">Deanship of Student Affairs</div><h1 className="text-2xl font-bold">Student Affairs</h1><div className="grid md:grid-cols-3 gap-3 mt-4">
+<div className="bg-white border border-line rounded-xl p-4"><h3 className="font-bold text-sm">Message from Dean</h3><p className="text-xs text-slate">Welcome to MIU — we support your non-curricular persona via clubs, services, and welfare.</p></div>
+<div className="bg-white border border-line rounded-xl p-4"><h3 className="font-bold text-sm">Services & Facilities</h3><p className="text-xs text-slate">Counselling, hostel, transport, health, career guidance.</p></div>
+<div className="bg-white border border-line rounded-xl p-4"><h3 className="font-bold text-sm">Differently-Abled Support</h3><p className="text-xs text-slate">Accessible routes, support staff, accommodation — contact Dean’s office.</p></div>
+<div className="bg-white border border-line rounded-xl p-4"><h3 className="font-bold text-sm">Student Clubs</h3><p className="text-xs text-slate">Debate, tech, entrepreneurship, sports — join via Student Affairs portal.</p></div>
+<div className="bg-white border border-line rounded-xl p-4"><h3 className="font-bold text-sm">Online Request Forms</h3><p className="text-xs text-slate">Hostel, clearance, event approvals — now digitised (no paper forms).</p></div>
+</div></div></section>}
